@@ -1,47 +1,35 @@
-import { useEffect, useState } from 'react';
 import './App.css';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from './firebaseconfig';
-
-import Dashboard from './Dashboard';
-import LandingPage from './Landing';
-
-import { signOut } from 'firebase/auth';
+import Dashboard from './pages/Dashboard';
+import LandingPage from './pages/Landing';
+import { MachineContext } from './MachineContext';
+import { useEffect, useState } from 'react';
+import { User } from 'firebase/auth';
 
 export const App = () => {
-  const [user, setUser] = useState<User | null>(null);
-
-  const logout = () => {
-    signOut(auth).then(() => {
-      console.log('User signed out');
-      setUser(null);
-    });
-  };
+  const actorRef = MachineContext.useActorRef();
+  const [state, setState] = useState<object>();
+  const [user, setUser] = useState<User | null>();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        console.log('User signed in:', user);
-        setUser(user);
-        // handle signed-in user
-      } else {
-        console.log('No user signed in');
-        // handle signed-out user
-      }
+    const sub = actorRef.subscribe((snapshot) => {
+      console.log(snapshot?.value);
+      setState(snapshot?.value);
+      setUser(snapshot?.context.user);
     });
-    return () => unsubscribe();
-  }, []);
+    return () => sub.unsubscribe();
+  }, [actorRef]);
+
+  if (user) {
+    console.log('We have a user', user);
+  }
 
   return (
     <>
-      {user ? (
-        <div>
-          <Dashboard />
-          <button onClick={logout}>Log Out</button>
-        </div>
-      ) : (
-        <LandingPage />
-      )}
+      {user ? <Dashboard /> : <LandingPage />}
+
+      <hr style={{ marginTop: 100 }} />
+
+      <p>{JSON.stringify(state, null, 3)}</p>
     </>
   );
 };

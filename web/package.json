@@ -10,9 +10,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@emotion/react": "^11.11.1",
+    "@emotion/styled": "^11.11.0",
+    "@mui/material": "^5.14.11",
+    "@xstate/react": "^4.0.1",
     "firebase": "^10.2.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "react-dropzone": "^14.2.3",
+    "xstate": "^5.2.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.15",
@@ -23,8 +29,8 @@
     "eslint": "^8.45.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.3",
+    "prettier": "^3.0.2",
     "typescript": "^5.0.2",
-    "vite": "^4.4.5",
-    "prettier": "^3.0.2"
+    "vite": "^4.4.5"
   }
 }
