@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MachineContext } from '../MachineContext';
+import { MachineContext } from '../contexts/MachineContext';
 import { Button, TextField, Container, Typography } from '@mui/material';
 
 const SignUp: React.FC = () => {

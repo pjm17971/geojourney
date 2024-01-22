@@ -2,7 +2,7 @@ import React, { useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Box, LinearProgress, Typography } from '@mui/material';
 import { auth } from '../firebaseconfig';
-import { MachineContext } from '../MachineContext';
+import { MachineContext } from '../contexts/MachineContext';
 
 const Uploader: React.FC = () => {
   const actorRef = MachineContext.useActorRef();

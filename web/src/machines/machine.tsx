@@ -1,154 +1,24 @@
-import { AnyEventObject, assign, fromCallback, fromPromise, setup } from 'xstate';
-import { auth, storage, db } from './firebaseconfig';
-
-import {
-  StorageError,
-  UploadTask,
-  getDownloadURL,
-  ref,
-  uploadBytesResumable,
-} from 'firebase/storage';
+import { fromPromise, setup, assign, log, sendTo } from 'xstate';
+import { auth } from '../firebaseconfig';
 
 import {
   User,
   createUserWithEmailAndPassword,
-  onAuthStateChanged,
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
 
-import { collection, onSnapshot, query } from 'firebase/firestore';
+import { AuthActorEvents, authActor } from './actors/AuthActor';
+import { Activity, EmailPassword } from './types';
+import { FileUploadEvents, fileUploadActor } from './actors/FileUploadActor';
+import { DatabaseActorEmitedEvents, databaseActor } from './actors/DatabaseActor';
 
-export interface Activity {
-  name: string;
-  duration: number;
-  distance: number;
-  source: string;
-  uploaded: Date;
-}
-
-type AuthActorEvents = { type: 'AUTHENTICATED'; data: User } | { type: 'UNAUTHENTICATED' };
-
-type AuthActorArg = {
-  sendBack: (event: AuthActorEvents) => void;
-};
-
-const authActor = fromCallback(({ sendBack }: AuthActorArg) => {
-  console.log('AUTH: authActor started!!!');
-  const unsubscribe = onAuthStateChanged(auth, (user) => {
-    if (user) {
-      console.log('AUTH: Sending back authenticated user');
-      sendBack({ type: 'AUTHENTICATED', data: user });
-    } else {
-      console.log('AUTH: Sending back unauthenticated');
-      sendBack({ type: 'UNAUTHENTICATED' });
-    }
-  });
-  return () => {
-    console.log('AUTH: authActor stopped!!!');
-    unsubscribe();
-  };
-});
-
-/**
- * Service to interface with firebase storage uploads. The service takes the current
- * user and upload file from context and begins a resumable upload using `uploadBytesResumable`.
- */
-
-type FileUploaderEvents =
-  | { type: 'UPLOAD_PROGRESS'; progress: number }
-  | { type: 'UPLOAD_STATUS'; status: string }
-  | { type: 'UPLOAD_FAILED'; error: StorageError }
-  | { type: 'UPLOAD_COMPLETED'; url: string };
-
-type FileUploaderArg = {
-  sendBack: (event: FileUploaderEvents) => void;
-  input: {
-    user: User | null;
-    file: File | null;
-  };
-};
-
-const fileUploader = fromCallback(({ sendBack, input }: FileUploaderArg) => {
-  const { user, file } = input;
-  let uploader: UploadTask;
-  if (user && file) {
-    const userId = (user as User).uid;
-    const metadata = {
-      contentType: 'application/gpx+xml',
-    };
-    const imageRef = ref(storage, `gps_data/${userId}/${file.name}`);
-    uploader = uploadBytesResumable(imageRef, file, metadata);
-    uploader.on(
-      'state_changed',
-      (snapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-        sendBack({ type: 'UPLOAD_PROGRESS', progress });
-        sendBack({ type: 'UPLOAD_STATUS', status: snapshot.state });
-      },
-      (error) => {
-        sendBack({ type: 'UPLOAD_FAILED', error });
-      },
-      () => {
-        getDownloadURL(uploader.snapshot.ref).then((downloadURL) => {
-          sendBack({ type: 'UPLOAD_COMPLETED', url: downloadURL });
-        });
-      },
-    );
-  }
-  return () => {
-    if (uploader) {
-      uploader.cancel();
-    }
-  };
-});
-
-/**
- * Service to interface with the Firebase Firestore database. The service takes the current
- * user and subscribes to the user's activities list
- */
-
-type FirestoreService = {
-  sendBack: (event: AnyEventObject) => void;
-  input: {
-    user: User | null;
-  };
-};
-
-const firestoreService = fromCallback(({ sendBack, input }: FirestoreService) => {
-  const { user } = input;
-
-  console.log('Starting firestore service');
-
-  if (user) {
-    const ref = collection(db, 'users', user.uid, 'activities');
-    const q = query(ref);
-
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-      const activities: Activity[] = [];
-
-      querySnapshot.forEach((doc) => {
-        const rawActivity = doc.data();
-        const activity: Activity = {
-          name: rawActivity.name,
-          duration: rawActivity.duration,
-          distance: rawActivity.distance,
-          source: rawActivity.source,
-          uploaded: new Date(rawActivity.uploaded),
-        };
-        activities.push(activity);
-      });
-
-      sendBack({ type: 'ACTIVITIES_UPDATE', activities });
-    });
-
-    return () => unsubscribe();
-  }
-});
-
-type EmailPassword = {
-  input: { email: string | null; password: string | null };
-};
+type UserEvents =
+  | { type: 'SIGNUP'; email: string; password: string }
+  | { type: 'SIGNIN'; email: string; password: string }
+  | { type: 'SIGNOUT' }
+  | { type: 'UPLOAD'; file: File }
+  | { type: 'SELECT_ACTIVITY'; activityId: string };
 
 const signUpService = fromPromise(({ input }: EmailPassword) => {
   const { email, password } = input;
@@ -164,6 +34,10 @@ const signOutService = fromPromise(() => {
   return signOut(auth);
 });
 
+// const increment = ({ context }: { context: MyContext }) => ({
+//   count: context.count + 1,
+// });
+
 export const machine = setup({
   types: {
     context: {} as {
@@ -173,32 +47,20 @@ export const machine = setup({
       fileUploadProgress: number | null;
       fileUploadError: string | null;
       activities: Activity[];
+      selectedActivityId: string | null;
+      selectedActivity: Activity | null;
       email: string | null;
       password: string | null;
     },
-    events: {} as
-      | AuthActorEvents
-      | FileUploaderEvents
-      | { type: 'SIGNUP'; email: string; password: string }
-      | { type: 'SIGNIN'; email: string; password: string }
-      | { type: 'SIGNOUT' }
-      | { type: 'ACTIVITIES_UPDATE'; activities: Activity[] }
-      | { type: 'UPLOAD'; file: File },
+    events: {} as AuthActorEvents | FileUploadEvents | DatabaseActorEmitedEvents | UserEvents,
   },
   actions: {
     clearUser: assign({ user: () => null }),
-    assignUser: assign({
-      user: (_, params: { user: User | null }) => {
-        console.log('assignUser', params);
-        return params.user;
-      },
-    }),
+    assignUser: assign({ user: (_, params: { user: User | null }) => params.user }),
     assignFile: assign({ file: (_, params: { file: File | null }) => params.file }),
     assignUploadProgress: assign({
       fileUploadProgress: (_, params: { progress: number }) => params.progress,
     }),
-    // assignUploadStatus: assign({ fileUploadStatus: ({ event }) => event.status }),
-    // assignUploadError: assign({ fileUploadError: ({ event }) => event.error.message }),
     assignActivities: assign({
       activities: (_, params: { activities: Activity[] }) => params.activities,
     }),
@@ -206,11 +68,17 @@ export const machine = setup({
       email: (_, params: { email: string; password: string }) => params.email,
       password: (_, params: { email: string; password: string }) => params.password,
     }),
+    assignSelectedActivityId: assign({
+      selectedActivityId: (_, params: { activityId: string }) => params.activityId,
+    }),
+    assignSelectedActivity: assign({
+      selectedActivity: (_, params: { activity: Activity }) => params.activity,
+    }),
   },
   actors: {
     authActor,
-    fileUploader,
-    firestoreService,
+    fileUploadActor,
+    databaseActor,
     signOutService,
     signInService,
     signUpService,
@@ -220,13 +88,15 @@ export const machine = setup({
   initial: 'initial',
   context: {
     user: null,
+    email: null,
+    password: null,
     file: null,
     fileUploadStatus: null,
     fileUploadProgress: null,
     fileUploadError: null,
     activities: [],
-    email: null,
-    password: null,
+    selectedActivityId: null,
+    selectedActivity: null,
   },
 
   invoke: {
@@ -291,38 +161,70 @@ export const machine = setup({
           target: 'signingIn',
           actions: {
             type: 'assignEmailAndPassword',
-            params: ({ event }) => ({ email: event.email, password: event.password }),
+            params: ({ event: { email, password } }) => ({ email, password }),
           },
         },
         AUTHENTICATED: {
           target: 'authenticated',
-          actions: { type: 'assignUser', params: ({ event }) => ({ user: event.data }) },
+          actions: { type: 'assignUser', params: ({ event: { data } }) => ({ user: data }) },
         },
       },
     },
 
     /**
-     * The app is in a known authenticated states. The user
-     * may sign out in which case the authenticated state will
-     * change via the UNAUTHENTICATED message (or the server can also log
+     * The app is in a known authenticated states. The user may sign out in which case the
+     * authenticated state will change via the UNAUTHENTICATED message (or the server can also log
      * out the user)
      */
     authenticated: {
+      entry: log('ENTRY authenticated'),
+      exit: log('EXIT authenticated'),
+
       invoke: {
-        src: 'firestoreService',
-        input: ({ context }) => ({ user: context.user }),
+        id: 'db',
+        src: 'databaseActor',
+        input: ({ context }) => ({
+          user: context.user,
+        }),
       },
+
       on: {
         SIGNOUT: {
           target: '.signingOut',
         },
         UPLOAD: {
           target: '.uploading',
-          actions: { type: 'assignFile', params: ({ event }) => ({ file: event.file }) },
+          actions: { type: 'assignFile', params: ({ event: { file } }) => ({ file }) },
         },
         UNAUTHENTICATED: {
           target: 'unauthenticated',
           actions: 'clearUser',
+        },
+        SELECT_ACTIVITY: {
+          actions: [
+            log(({ event }) => {
+              return `SELECT_ACTIVITY handled for ${event.activityId}`;
+            }),
+            sendTo('db', ({ event }) => ({
+              type: 'ACTIVITY_SUBSCRIBE',
+              activityId: event.activityId,
+            })),
+            {
+              type: 'assignSelectedActivityId',
+              params: ({ event: { activityId } }) => ({ activityId }),
+            },
+          ],
+        },
+        ACTIVITY_UPDATE: {
+          actions: [
+            log(({ event }) => {
+              return `ACTIVITY_UPDATE handled for ${JSON.stringify(event.activity)}`;
+            }),
+            {
+              type: 'assignSelectedActivity',
+              params: ({ event: { activity } }) => ({ activity }),
+            },
+          ],
         },
       },
       initial: 'idle',
@@ -330,7 +232,7 @@ export const machine = setup({
         idle: {},
         uploading: {
           invoke: {
-            src: 'fileUploader',
+            src: 'fileUploadActor',
             input: ({ context }) => ({ user: context.user, file: context.file }),
           },
           on: {
